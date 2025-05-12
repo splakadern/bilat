@@ -3,39 +3,33 @@
 #include <ESPAsyncWebServer.h>
 #include <SPI.h>
 #include <RF24.h>
-#include <vector> // Include vector for dynamic array
-// #include <LittleFS.h> // Removed include for LittleFS
-// #include <ArduinoJson.h> // Removed include for ArduinoJson (as used for file ops)
+#include <vector>
+#include <ArduinoJson.h> // Include ArduinoJson for creating JSON responses
 
 // Define AP credentials
-// This is the network the ESP32 will CREATE
-const char* ap_ssid = "nothing"; // The name of the network the ESP32 will broadcast
-const char* ap_password = "buymeacoffee"; // The password for the ESP32's network
+const char* ap_ssid = "nothing";
+const char* ap_password = "buymeacoffee";
 
 // Define CE and CSN pins based on the provided pinout
-#define CE_PIN  22 // Chip Enable pin connected to ESP32 GPIO22
-#define CSN_PIN 21 // Chip Select Not pin connected to ESP32 GPIO21 (VSPI CS)
+#define CE_PIN  22
+#define CSN_PIN 21
 
 // Create an RF24 object
 RF24 radio(CE_PIN, CSN_PIN);
 
-// Address for communication (needs to match the target device's transmitting address)
-// You might need to determine this address by sniffing traffic or from documentation.
-// Note: While scanning, the radio listens on a single address across multiple channels.
-// The target device must be transmitting on this address.
-const byte addresses[][6] = {"1Node"}; // Example address, change as needed
+// Address for communication
+const byte addresses[][6] = {"1Node"};
 
 // --- Packet Storage ---
 struct CapturedPacket {
-    uint8_t data[32]; // nRF24L01+ has a maximum payload size of 32 bytes
+    uint8_t data[32];
     uint8_t size;
-    uint8_t channel; // Store the channel the packet was captured on
-    unsigned long captureTime; // Optional: store capture time
+    uint8_t channel;
+    unsigned long captureTime;
 };
 
-std::vector<CapturedPacket> capturedPackets; // Use a vector to store packets
+std::vector<CapturedPacket> capturedPackets;
 const size_t MAX_PACKETS = 10; // Maximum number of packets to store
-// const char* PACKETS_FILE_PATH = "/packets.json"; // Removed file path
 
 // State variables
 volatile bool isCapturing = false;
@@ -43,11 +37,11 @@ volatile bool replayTriggered = false;
 volatile int packetIndexToReplay = -1; // -1 indicates no packet selected for replay
 
 // --- Scanning Variables ---
-uint8_t currentChannel = 0; // Start scanning from channel 0
+uint8_t currentChannel = 0;
 unsigned long channelSwitchTime = 0;
-const unsigned long CHANNEL_DWELL_TIME_MS = 10; // DWELL TIME for quicker scan
-const unsigned long EXTENDED_DWELL_TIME_MS = 200; // Longer dwell time after capture
-bool packetCapturedRecently = false; // Flag for adaptive dwell
+const unsigned long CHANNEL_DWELL_TIME_MS = 10;
+const unsigned long EXTENDED_DWELL_TIME_MS = 200;
+bool packetCapturedRecently = false;
 
 
 // Web Server
@@ -67,14 +61,10 @@ String bytesToHex(uint8_t* buffer, uint8_t bufferSize) {
   return hexString;
 }
 
-// --- Persistence Functions (Removed) ---
-// savePackets() and loadPackets() functions are removed.
+// --- Embedded Web Content (HTML, CSS, and JS) ---
 
-
-// --- Embedded Web Content (HTML and CSS only) ---
-// HTML (Dynamically generated, this is a template structure)
-// The actual HTML content will be built as a String in the / handler
-const char html_template_start[] PROGMEM = R"rawliteral(
+// HTML Structure - Modified to use IDs for JS updates and include script tag
+const char html_page[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -87,11 +77,7 @@ const char html_template_start[] PROGMEM = R"rawliteral(
 
     <div class="status-section">
       <h2>Status</h2>
-      <p id="status">
-)rawliteral";
-
-const char html_template_status_end_controls_start[] PROGMEM = R"rawliteral(
-      </p>
+      <p id="status"></p>
     </div>
 
     <div class="controls-section">
@@ -101,40 +87,70 @@ const char html_template_status_end_controls_start[] PROGMEM = R"rawliteral(
       <form action="/stop_capture" method="post" style="display:inline;">
         <button type="submit">STOP CAPTURE</button>
       </form>
-      </div>
+    </div>
 
     <div class="packet-list-section">
       <h2>Captured Packets</h2>
-      <div id="packetList">
-)rawliteral";
-
-const char html_template_packet_item_start[] PROGMEM = R"rawliteral(
-        <div class="packet-item">
-          <div class="packet-info">
-            <strong>Packet %u:</strong> <span class="packet-size">Size: %u bytes</span> <span class="packet-channel">Channel: %u</span><br>
-            <span class="packet-data-hex">%s</span>
-          </div>
-          <form action="/replay_packet" method="post" style="display:inline;">
-            <input type="hidden" name="index" value="%u">
-            <button type="submit">REPLAY</button>
-          </form>
-          <form action="/delete_packet" method="post" style="display:inline;">
-            <input type="hidden" name="index" value="%u">
-            <button type="submit" class="delete-button" onclick="return confirm('Are you sure you want to delete this packet?');">DELETE</button>
-          </form>
-        </div>
-)rawliteral";
-
-const char html_template_no_packets[] PROGMEM = R"rawliteral(
-        <p>No packets captured yet.</p>
-)rawliteral";
-
-
-const char html_template_end[] PROGMEM = R"rawliteral(
-      </div>
+      <div id="packetList"></div>
     </div>
 
   </div>
+
+  <script>
+    // JavaScript for dynamic status and packet list updates
+
+    const statusElement = document.getElementById('status');
+    const packetListElement = document.getElementById('packetList');
+
+    async function updateStatus() {
+      try {
+        const response = await fetch('/status_json');
+        const data = await response.json();
+
+        // Update Status
+        statusElement.textContent = data.status;
+
+        // Update Packet List
+        let packetListHTML = '';
+        if (data.packets.length === 0) {
+          packetListHTML = '<p>No packets captured yet.</p>';
+        } else {
+          data.packets.forEach(packet => {
+            // Use template literals for easier string building
+            packetListHTML += `
+              <div class="packet-item">
+                <div class="packet-info">
+                  <strong>Packet ${packet.index}:</strong> <span class="packet-size">Size: ${packet.size} bytes</span> <span class="packet-channel">Channel: ${packet.channel}</span><br>
+                  <span class="packet-data-hex">${packet.data}</span>
+                </div>
+                <form action="/replay_packet" method="post" style="display:inline;">
+                  <input type="hidden" name="index" value="${packet.index}">
+                  <button type="submit">REPLAY</button>
+                </form>
+                <form action="/delete_packet" method="post" style="display:inline;">
+                  <input type="hidden" name="index" value="${packet.index}">
+                  <button type="submit" class="delete-button" onclick="return confirm('Are you sure you want to delete this packet?');">DELETE</button>
+                </form>
+              </div>
+            `;
+          });
+        }
+        packetListElement.innerHTML = packetListHTML;
+
+      } catch (error) {
+        console.error('Failed to fetch status:', error);
+        statusElement.textContent = 'Error fetching status.';
+        packetListElement.innerHTML = '<p>Error loading packets.</p>';
+      }
+    }
+
+    // Update status and packet list every 2 seconds
+    setInterval(updateStatus, 2000);
+
+    // Initial update when the page loads
+    updateStatus();
+
+  </script>
 
 </body>
 </html>
@@ -164,13 +180,6 @@ body {
   max-width: 600px; /* Increased max-width for packet list */
   width: 95%; /* Responsive width */
   border: 1px solid #505050; /* More visible subtle border */
-}
-
-h1 { /* Removed h1 from HTML, so this style is not used but kept for completeness */
-  color: #00ccff; /* Accent color */
-  margin-bottom: 20px;
-  font-size: 1.8em;
-  text-shadow: 0 0 5px rgba(0, 204, 255, 0.5);
 }
 
 h2 {
@@ -255,23 +264,13 @@ button:active {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-#startCaptureButton {
-    background-color: #408040; /* Muted green */
-    color: white;
-}
-#startCaptureButton:hover {
-    background-color: #509050;
-}
+/* Note: Removed specific start/stop button styles as they weren't in the HTML,
+         but keeping them here just in case you add IDs later. */
+/* #startCaptureButton { ... } */
+/* #stopCaptureButton { ... } */
 
-#stopCaptureButton {
-    background-color: #a04040; /* Muted red */
-    color: white;
-}
-#stopCaptureButton:hover {
-    background-color: #b05050;
-}
 
-.delete-button, .delete-all-button {
+.delete-button, .delete-all-button { /* Added .delete-all-button style */
     background-color: #c03030; /* Muted delete red */
     color: white;
 }
@@ -292,14 +291,25 @@ button:active {
 }
 
 
-.footer { /* Removed footer from HTML, so this style is not used */
-  margin-top: 30px;
-  font-size: 0.8em;
-  color: #666;
-}
-
 /* Mobile specific adjustments */
-@media (max-width: 600px) {\n  body {\n    padding: 10px;\n  }\n\n  .container {\n    padding: 20px;\n    width: 100%; /* Use full width on smaller screens */\n  }\n\n  h2 {\n    font-size: 1.1em;\n  }\n\n  button {\n    padding: 10px 20px;\n    font-size: 1em;\n  }
+@media (max-width: 600px) {
+  body {
+    padding: 10px;
+  }
+
+  .container {
+    padding: 20px;
+    width: 100%; /* Use full width on smaller screens */
+  }
+
+  h2 {
+    font-size: 1.1em;
+  }
+
+  button {
+    padding: 10px 20px;
+    font-size: 1em;
+  }
   .packet-item {
       flex-direction: column; /* Stack items vertically on small screens */
       align-items: flex-start; /* Align items to the start */
@@ -314,24 +324,17 @@ button:active {
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial); // Wait for serial port to connect
+  while (!Serial);
 
-  Serial.println("ESP32 nRF24L01+ Replay Module (Access Point Mode - No JS - Multi-Channel Scan - No Persistence)"); // Updated print
+  Serial.println("ESP32 nRF24L01+ Replay Module (Access Point Mode - Dynamic Updates)");
   Serial.println("Using provided VSPI Pinout:");
   Serial.println("CE Pin: 22");
   Serial.println("CSN Pin: 21");
   Serial.println("SCK Pin: 18");
   Serial.println("MISO Pin: 19");
   Serial.println("MOSI Pin: 23");
-  Serial.printf("Max packets to store in RAM: %u\n", MAX_PACKETS); // Updated print
+  Serial.printf("Max packets to store in RAM: %u\n", MAX_PACKETS);
 
-
-  // --- Filesystem Initialization (Removed) ---
-  // LittleFS.begin() is removed
-  // Serial.println("LittleFS initialized."); // Removed print
-
-  // --- Load captured packets from flash memory (Removed) ---
-  // loadPackets() call is removed
 
   // --- Configure ESP32 as a WiFi Access Point (AP) ---
   Serial.printf("Starting WiFi Access Point '%s' with password '%s'\n", ap_ssid, ap_password);
@@ -345,72 +348,81 @@ void setup() {
   // Initialize the radio
   if (!radio.begin()) {
     Serial.println("Radio hardware not responding!");
-    // Consider a way to indicate this on the web page
-    return; // Exit setup if radio fails
+    // The web page status update will reflect this indirectly (no capture possible)
+    // but a more explicit error message could be added to the JSON status.
+    // For now, we proceed but functionality will be limited.
+  } else {
+    Serial.println("Radio initialized.");
+     // Set data rate and PA level
+    radio.setDataRate(RF24_250KBPS); // Match the target device's data rate
+    radio.setPALevel(RF24_PA_LOW); // Adjust as needed
+
+    // Open a reading pipe on the defined address
+    radio.openReadingPipe(0, addresses[0]);
   }
 
-  // Set data rate and PA level (These apply across all scanned channels)
-  radio.setDataRate(RF24_250KBPS); // Match the target device's data rate
-  radio.setPALevel(RF24_PA_LOW); // Adjust as needed
 
-  // Open a reading pipe on the defined address (This address will be used on each scanned channel)
-  radio.openReadingPipe(0, addresses[0]);
+  Serial.println("Access Point active. HTTP server starting.");
 
 
-  // Radio is initialized but not listening yet, will start when Capture is enabled
-
-  Serial.println("Radio initialized. Access Point active.");
-  Serial.println("Connect to the network above to access the web interface.");
-
-
-  // --- Web Server Handlers (No JS) ---
+  // --- Web Server Handlers (with JSON endpoint for JS) ---
 
   // Handle for root URL (/) - Serves the main HTML page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    String html = ""; // Build the HTML string
-    html += html_template_start;
-
-    // Add status text
-    if (!radio.isChipConnected()) {
-        html += "Radio Error";
-    } else if (isCapturing) {
-        char status_buffer[64]; // Buffer for status text with channel
-        snprintf(status_buffer, sizeof(status_buffer), "Capturing (Scanning Channel %u)...", currentChannel);
-        html += status_buffer;
-    } else {
-        html += "Capture Stopped"; // Changed indicator text here
-    }
-
-    html += html_template_status_end_controls_start;
-
-    // Add captured packets list
-    if (capturedPackets.empty()) {
-        html += html_template_no_packets;
-    } else {
-        char packet_item_buffer[512]; // Buffer to build each packet item HTML
-        for (size_t i = 0; i < capturedPackets.size(); i++) {
-            String hexData = bytesToHex(capturedPackets[i].data, capturedPackets[i].size);
-             // Use snprintf to safely format the string, including channel and indices for buttons
-            snprintf(packet_item_buffer, sizeof(packet_item_buffer),
-                     html_template_packet_item_start,
-                     i, capturedPackets[i].size, capturedPackets[i].channel, hexData.c_str(), i, i); // Added i twice for replay and delete forms
-            html += packet_item_buffer;
-        }
-    }
-
-
-    html += html_template_end;
-
-    request->send(200, "text/html", html); // Send the generated HTML
+    request->send_P(200, "text/html", html_page);
   });
 
   // Handle for CSS file
   server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send_P(200, "text/css", style_css); // Serve the embedded CSS
+    request->send_P(200, "text/css", style_css);
   });
+
+  // NEW: Handle for JSON status and packet data
+  server.on("/status_json", HTTP_GET, [](AsyncWebServerRequest *request){
+    // Estimate the size needed for the JSON document
+    // Status string ~64 bytes + for each packet: index(int) + size(int) + channel(int) + data(hex string up to 32*3 + spaces)
+    // Rough estimate: 64 + MAX_PACKETS * (4 + 4 + 4 + 32*3 + 32) = 64 + 10 * (12 + 96 + 32) = 64 + 10 * 140 = 1464 bytes
+    // Use a buffer slightly larger than the estimate
+    const size_t capacity = JSON_ARRAY_SIZE(MAX_PACKETS) + MAX_PACKETS*JSON_OBJECT_SIZE(4) + JSON_OBJECT_SIZE(2); // JSON_OBJECT_SIZE(2) for status and packets array
+    StaticJsonDocument<1600> doc; // Use static allocation on the stack
+
+    // Add status
+    if (!radio.isChipConnected()) {
+        doc["status"] = "Radio Error - Check wiring";
+    } else if (isCapturing) {
+        char status_buffer[64];
+        snprintf(status_buffer, sizeof(status_buffer), "Capturing (Scanning Channel %u)...", currentChannel);
+        doc["status"] = status_buffer;
+    } else {
+        doc["status"] = "Capture Stopped";
+    }
+
+
+    // Add packets array
+    JsonArray packets = doc.createNestedArray("packets");
+    for (size_t i = 0; i < capturedPackets.size(); i++) {
+        JsonObject packet = packets.createNestedObject();
+        packet["index"] = i; // Use the index in the vector
+        packet["size"] = capturedPackets[i].size;
+        packet["channel"] = capturedPackets[i].channel;
+        packet["data"] = bytesToHex(capturedPackets[i].data, capturedPackets[i].size); // Convert data to hex string
+    }
+
+    // Send the JSON response
+    String jsonResponse;
+    serializeJson(doc, jsonResponse);
+    request->send(200, "application/json", jsonResponse);
+  });
+
 
   // Handle for Start Capture action (POST request from form)
   server.on("/start_capture", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!radio.isChipConnected()) {
+        Serial.println("Cannot start capture: Radio hardware not responding.");
+         // Maybe redirect with an error parameter? For now, just redirect.
+        request->redirect("/");
+        return;
+    }
     if (!isCapturing) {
       isCapturing = true;
       currentChannel = 0; // Start scanning from channel 0
@@ -440,6 +452,11 @@ void setup() {
 
   // Handle for Replay Packet action (POST request from form)
   server.on("/replay_packet", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!radio.isChipConnected()) {
+        Serial.println("Cannot replay: Radio hardware not responding.");
+        request->redirect("/");
+        return;
+    }
     if (isCapturing) {
       Serial.println("Cannot replay while capturing (via web).");
       request->redirect("/"); // Redirect back with status
@@ -452,9 +469,11 @@ void setup() {
 
       // Validate the index
       if (requestedIndex >= 0 && requestedIndex < capturedPackets.size()) {
-        packetIndexToReplay = requestedIndex; // Set the index of the packet to replay
-        replayTriggered = true; // Set the flag
+        // Set the flag and index to be processed in the loop()
+        packetIndexToReplay = requestedIndex;
+        replayTriggered = true;
         Serial.printf("Replay triggered for packet index %d (via web)...\n", requestedIndex);
+         // The replay logic happens in loop(), redirect immediately
       } else {
         Serial.printf("Invalid packet index requested for replay (via web): %d\n", requestedIndex);
       }
@@ -466,6 +485,11 @@ void setup() {
 
     // Handle for Delete Packet action (POST request from form)
   server.on("/delete_packet", HTTP_POST, [](AsyncWebServerRequest *request){
+    if (!radio.isChipConnected()) {
+        Serial.println("Cannot delete packet: Radio hardware not responding.");
+        request->redirect("/");
+        return;
+    }
     if (isCapturing) {
       Serial.println("Cannot delete packet while capturing (via web).");
       request->redirect("/"); // Redirect back with status
@@ -480,10 +504,7 @@ void setup() {
       if (requestedIndex >= 0 && requestedIndex < capturedPackets.size()) {
         Serial.printf("Deleting packet index %d (via web)...\n", requestedIndex);
         capturedPackets.erase(capturedPackets.begin() + requestedIndex); // Remove the packet
-
-        // savePackets(); // Removed save call
-
-        Serial.println("Packet deleted."); // Updated print
+        Serial.println("Packet deleted.");
       } else {
         Serial.printf("Invalid packet index requested for deletion (via web): %d\n", requestedIndex);
       }
@@ -492,10 +513,6 @@ void setup() {
     }
      request->redirect("/"); // Redirect back to the main page
   });
-
-    // Handle for Delete All Packets action (Removed) ---
-    // server.on("/delete_all_packets", HTTP_POST, [](AsyncWebServerRequest *request){...}); is removed.
-
 
   // Start server
   server.begin();
@@ -506,33 +523,30 @@ void loop() {
   // The AsyncWebServer handles client connections and requests in the background
 
   // --- Multi-Channel Scanning and Capture ---
-  if (isCapturing) {
+  if (isCapturing && radio.isChipConnected()) { // Only scan if radio is connected
     unsigned long currentTime = millis();
 
     // Check if it's time to switch channels
-    // Use adaptive dwell time based on recent capture
     unsigned long currentDwellTime = packetCapturedRecently ? EXTENDED_DWELL_TIME_MS : CHANNEL_DWELL_TIME_MS;
 
     if (currentTime - channelSwitchTime >= currentDwellTime) {
       // Switch to the next channel
       currentChannel++;
-      if (currentChannel > 125) { // Channels are typically 0-125
+      if (currentChannel > 125) {
         currentChannel = 0;
       }
 
-      radio.stopListening(); // Stop listening before changing channel
-      radio.setChannel(currentChannel); // Set the new channel
-      radio.startListening(); // Start listening on the new channel
+      radio.stopListening();
+      radio.setChannel(currentChannel);
+      radio.startListening();
 
-      Serial.printf("Scanning Channel %u...\n", currentChannel);
-      channelSwitchTime = currentTime; // Reset timer
-      packetCapturedRecently = false; // Reset recent capture flag on channel switch
+      // Serial.printf("Scanning Channel %u...\n", currentChannel); // Removed frequent print
+      channelSwitchTime = currentTime;
+      packetCapturedRecently = false; // Reset flag on channel switch
     }
 
     // Check for incoming nRF24L01+ packets on the current channel
     if (radio.available()) {
-      uint8_t pipeNum;
-      // Read the payload size
       uint8_t currentPacketSize = radio.getDynamicPayloadSize();
 
       if (currentPacketSize > 0 && currentPacketSize <= 32) {
@@ -543,55 +557,45 @@ void loop() {
         // Check if we have space to store the packet
         if (capturedPackets.size() < MAX_PACKETS) {
             CapturedPacket newPacket;
-            memcpy(newPacket.data, tempPacketData, currentPacketSize); // Copy data
+            memcpy(newPacket.data, tempPacketData, currentPacketSize);
             newPacket.size = currentPacketSize;
-            newPacket.channel = currentChannel; // Store the channel it was captured on
-            newPacket.captureTime = millis(); // Store capture time
+            newPacket.channel = currentChannel;
+            newPacket.captureTime = millis();
 
-            capturedPackets.push_back(newPacket); // Add to the vector
+            capturedPackets.push_back(newPacket);
 
-            Serial.printf("Captured packet %u (Size: %u bytes, Channel: %u): ", capturedPackets.size() - 1, currentPacketSize, newPacket.channel);
-            for (int i = 0; i < currentPacketSize; i++) {
-              Serial.print(tempPacketData[i], HEX);
-              Serial.print(" ");
-            }
-            Serial.println();
-
-             // savePackets(); // Removed save call
+            Serial.printf("Captured packet %u (Size: %u bytes, Channel: %u)\n", capturedPackets.size() - 1, currentPacketSize, newPacket.channel);
              packetCapturedRecently = true; // Set flag since a packet was just captured
 
-
         } else {
-            Serial.printf("Captured packet (Size: %u bytes, Channel: %u), but storage is full (max %u packets).\\n", currentPacketSize, currentChannel, MAX_PACKETS);
-             // Optional: Overwrite the oldest packet instead of stopping capture
-             // For now, we just ignore new packets when full.
+            // Only print when a packet is missed due to full storage
+            static unsigned long lastFullMessage = 0;
+            if (millis() - lastFullMessage > 5000) { // Print every 5 seconds
+                 Serial.printf("Captured packet (Size: %u bytes, Channel: %u), but storage is full (max %u packets).\n", currentPacketSize, currentChannel, MAX_PACKETS);
+                 lastFullMessage = millis();
+            }
         }
 
       } else {
-           Serial.println("Received packet with unexpected payload size or no data while capturing.");
+           // Serial.println("Received packet with unexpected payload size or no data while capturing."); // Removed noisy print
       }
     }
   }
   // --- End Multi-Channel Scanning and Capture ---
 
 
-  // Check if replay is triggered (from web request)
-  if (replayTriggered) {
+  // Check if replay is triggered (from web request) and radio is connected
+  if (replayTriggered && radio.isChipConnected()) {
     // Ensure a valid packet index is set
     if (packetIndexToReplay >= 0 && packetIndexToReplay < capturedPackets.size()) {
-        Serial.printf("Attempting to replay captured packet index %d (triggered via web)...\\n", packetIndexToReplay);
+        Serial.printf("Attempting to replay captured packet index %d (triggered via web)...\n", packetIndexToReplay);
 
         // Get the packet to replay from storage
         CapturedPacket packetToReplay = capturedPackets[packetIndexToReplay];
 
         // --- Prepare for transmission ---
-        // Stop listening if currently capturing
-        if (isCapturing) {
-             radio.stopListening();
-        } else {
-            // If not capturing, ensure listening is off before transmitting
-            radio.stopListening();
-        }
+        // Stop listening if currently capturing or idle listening
+        radio.stopListening();
         // Replay on the channel the packet was captured on
         radio.setChannel(packetToReplay.channel);
         radio.openWritingPipe(addresses[0]); // Use the defined address for transmission
@@ -604,9 +608,6 @@ void loop() {
         }
 
         // --- Return to appropriate mode ---
-        // Close the writing pipe (implicitly handled by setting reading pipe or stopping)
-        // radio.closeWritingPipe(); // Not in v1.5.0
-
         // After replay, if capturing was active, resume listening on the *current scanning channel*. Otherwise, stay idle.
         if (isCapturing) {
             radio.stopListening(); // Ensure out of TX mode
@@ -626,12 +627,8 @@ void loop() {
 
     replayTriggered = false; // Reset the flag
     packetIndexToReplay = -1; // Reset packet index
-
-    // Note: The web page will be redirected and reloaded after replay,
-    // showing the updated status/list.
-
   }
 
   // Small delay to prevent watchdog timer issues in tight loops
-  delay(1); // Keep the loop from running too fast
+  delay(1);
 }
